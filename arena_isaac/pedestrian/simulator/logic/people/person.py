@@ -1,5 +1,6 @@
 # Low level APIs
 import os
+from collections import deque
 
 import carb
 import numpy as np
@@ -73,13 +74,8 @@ class Person:
         self._state.orientation = Rotation.from_euler('z', init_yaw, degrees=False).as_quat()
 
         # Set the target position for the character
-        self._target_position = np.array(init_pos)
+        self._target_positions = deque[np.ndarray]()
         self._target_speed = 0.0
-
-        # Set the transition point for the path points
-        self._transition_point = np.array(init_pos)
-        self._num_path_points = 0
-        self._current_point_index = 0
 
         # Save the name with which the vehicle will appear in the stage
         # and the character model that will be loaded into the simulator
@@ -191,28 +187,20 @@ class Person:
         if self._controller:
             self._controller.update(dt)
 
-        # Compute the distance between the current position and the goal position
-        index_point = self._current_point_index
-        distance_to_target_position = np.linalg.norm(self._target_position[index_point] - self._state.position)
-        # print(self._num_path_points)
+        THRESHOLD_DISTANCE = 0.3  # m
+        while self._target_positions and np.linalg.norm(self._target_position - self._state.position) < THRESHOLD_DISTANCE:
+            # set next target
+            self._target_positions.popleft()
 
-        # If we are still far away from the target position, keep moving towards it
-        if self._current_point_index < self._num_path_points:
-            if distance_to_target_position < 0.5:
-                self._current_point_index += 1
-                index_point = self._current_point_index
-                if self._current_point_index == self._num_path_points:
-                    index_point -= 1
-                    self._current_point_index -= 1
-                self.character_graph.set_variable("Action", "Walk")
-                self.character_graph.set_variable("PathPoints", [carb.Float3(self._state.position), carb.Float3(self._target_position[index_point])])
-                self.character_graph.set_variable("Walk", self._target_speed)
-            else:
-                self.character_graph.set_variable("Action", "Walk")
-                self.character_graph.set_variable("PathPoints", [carb.Float3(self._state.position), carb.Float3(self._target_position[index_point])])
-                self.character_graph.set_variable("Walk", self._target_speed)
+        if self._target_positions:
+            # targets not empty
+            extended_target = self._target_position + ((self._target_position - self._state.position) / np.linalg.norm(self._target_position - self._state.position)) * THRESHOLD_DISTANCE
+            self.character_graph.set_variable("PathPoints", [carb.Float3(self._state.position), carb.Float3(extended_target)])
+            self.character_graph.set_variable("Action", "Walk")
+            self.character_graph.set_variable("Walk", self._target_speed)
+
         else:
-            # If we are close to the target position, stop moving
+            # at target position, stop moving
             self.character_graph.set_variable("Walk", 0.0)
             self.character_graph.set_variable("Action", "Idle")
 
@@ -223,15 +211,14 @@ class Person:
         # if self.character_skel_root_stage_path is not None:
         #     PeopleManager.get_people_manager().add_person(self.character_skel_root_stage_path, self)
 
-    def update_target_position(self, position, walk_speed=1.0):
+    def update_target_positions(self, positions, walk_speed=1.0):
         """
         Method that updates the target position of the person to which it will move towards.
 
         Args:
             position (list): A list with the x, y, z coordinates of the target position.
         """
-        self._target_position = np.array(position)
-        self._num_path_points = len(position)
+        self._target_positions.extend(positions)
         self._target_speed = walk_speed
 
     def update_state(self, dt: float):
@@ -396,3 +383,23 @@ class Person:
         # Remove the person from the people manager
         if (path := self.character_skel_root_stage_path) is not None:
             PeopleManager.get_people_manager().remove_person(path)
+
+    @property
+    def position(self) -> np.ndarray:
+        return self._state.position
+
+    @property
+    def _target_position(self) -> np.ndarray:
+        if not self._target_positions:
+            return np.array(self._state.position)
+        return np.array(self._target_positions[0])
+
+    @property
+    def last_waypoint(self) -> np.ndarray:
+        if not self._target_positions:
+            return np.array(self._state.position)
+        return np.array(self._target_positions[-1])
+
+    @property
+    def path(self) -> str:
+        return self._stage_prefix

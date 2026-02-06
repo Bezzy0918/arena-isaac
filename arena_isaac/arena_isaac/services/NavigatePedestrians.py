@@ -20,11 +20,11 @@ def navigate_pedestrian(goal: PedestrianGoal) -> bool:
     navmesh = inav.get_navmesh()
     if navmesh:
         navmesh_path = navmesh.query_shortest_path(
-            person._state.position.tolist(), [goal.position.x, goal.position.y, goal.position.z]
+            person.last_waypoint.tolist(), [goal.position.x, goal.position.y, goal.position.z]
         )
         if navmesh_path:
             path_points = navmesh_path.get_points()
-            person.update_target_position(path_points, goal.velocity)
+            person.update_target_positions(path_points, goal.velocity)
             return True
 
     return False

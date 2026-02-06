@@ -111,12 +111,13 @@ class DoorManager:
         self._debug_rate_limit = 1.0
         self._last_debug_time = 0.0
 
-        self._pedestrian_topic_sub = self._controller.create_subscription(
-            std_msgs.msg.String,
-            '/isaac/add_pedestrians_topic',
-            self._cb_pedestrian_topic,
-            10
-        )
+        # # instead of ped topic, use direct people manager access
+        # self._pedestrian_topic_sub = self._controller.create_subscription(
+        #     std_msgs.msg.String,
+        #     '/isaac/add_pedestrians_topic',
+        #     self._cb_pedestrian_topic,
+        #     10
+        # )
 
     def _cb_pedestrian_topic(self, msg: std_msgs.msg.String):
         self._pedestrian_subs[msg.data] = self._controller.create_subscription(
@@ -230,9 +231,19 @@ class DoorManager:
         for door in self._doors.values():
             self._close_door(door)
 
+    def _update_peds_from_people_manager(self):
+        from pedestrian.simulator.logic.people_manager import PeopleManager
+        mgr = PeopleManager.get_people_manager()
+        self._pedestrian_poses.clear()
+
+        for name, person in mgr.people.items():
+            self._pedestrian_poses[name] = person.position
+
     def update(self):
         if not self._doors:
             carb.log_verbose("No doors registered with DoorManager.")
+
+        self._update_peds_from_people_manager()
 
         for door_path, door in self._doors.items():
             door_prim = door.prim
