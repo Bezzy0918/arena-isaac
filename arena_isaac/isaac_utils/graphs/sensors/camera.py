@@ -97,7 +97,7 @@ class SensorCamera(SensorBase):
             raise RuntimeError('Camera not simulated. Call simulate() first.')
 
         camera_topic = os.path.join(base_topic, self.name)
-        frame = os.path.join(self.robot_base_frame, self.parent_frame)
+        frame = os.path.join(self.robot_base_frame, f"camera_optical_link")
         node_namespace = ''
         queue_size = 1
 
