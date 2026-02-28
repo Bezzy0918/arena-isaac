@@ -64,6 +64,7 @@ class SensorIMU(SensorBase):
         on_playback_tick = graph.node("on_playback_tick", "omni.graph.action.OnPlaybackTick")
         read_imu = graph.node("read_imu", "omni.isaac.sensor.IsaacReadIMU")
         ros2_publish_imu = graph.node("ros2_publish_imu", "omni.isaac.ros2_bridge.ROS2PublishImu")
+        read_sim_time = graph.node("read_sim_time", "omni.isaac.core_nodes.IsaacReadSimulationTime")
         get_imu_prim = graph.node('get_imu_prim', 'omni.replicator.core.OgnGetPrimAtPath')
 
         get_imu_prim.attribute('paths', [self.prim_path])
@@ -75,6 +76,7 @@ class SensorIMU(SensorBase):
         read_imu.connect("angVel", ros2_publish_imu, "angularVelocity")  # Pass angular velocity
         read_imu.connect("linAcc", ros2_publish_imu, "linearAcceleration")  # Pass linear acceleration
         read_imu.connect("orientation", ros2_publish_imu, "orientation")  # Pass orientation
+        read_sim_time.connect("simulationTime", ros2_publish_imu, "timeStamp")
 
         # Set the node parameters
         ros2_publish_imu.attribute("topicName", os.path.join(base_topic, self.config.topic))  # ROS2 topic name

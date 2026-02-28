@@ -66,6 +66,7 @@ class SensorContact(SensorBase):
         on_playback_tick = graph.node("on_playback_tick", "omni.graph.action.OnPlaybackTick")
         read_contact_sensor = graph.node("read_contact_sensor", "omni.isaac.sensor.IsaacReadContactSensor")
         ros2_publisher = graph.node("ros2_publisher", "omni.isaac.ros2_bridge.ROS2Publisher")
+        read_sim_time = graph.node("read_sim_time", "omni.isaac.core_nodes.IsaacReadSimulationTime")
         get_contact_prim = graph.node('get_contact_prim', 'omni.replicator.core.OgnGetPrimAtPath')
 
         get_contact_prim.attribute('paths', [self.prim_path])
@@ -78,6 +79,7 @@ class SensorContact(SensorBase):
         read_contact_sensor.connect("inContact", ros2_publisher, "in_contact")
         read_contact_sensor.connect("value", ros2_publisher, "force_value")
         read_contact_sensor.connect("execOut", ros2_publisher, "execIn")
+        read_sim_time.connect("simulationTime", ros2_publisher, "timeStamp")
 
         ros2_publisher.attribute("topicName", os.path.join(base_topic, self.config.collision))
         ros2_publisher.attribute("messagePackage", "isaacsim_msgs")

@@ -14,7 +14,7 @@ from geometry_msgs.msg import TransformStamped
 from sensor_msgs_py import point_cloud2
 from tf2_ros import TransformBroadcaster
 from rclpy.node import Node
-import subprocess
+from rclpy.parameter import Parameter
 import time
 from omni.isaac.core.utils.prims import is_prim_path_valid, get_prim_at_path
 extensions.enable_extension("omni.isaac.ros2_bridge")
@@ -75,17 +75,19 @@ class LidarDataPublisher(Node):
             },
         )
 
+        try:
+            og.Controller.attribute("/ClockGraph/ReadSimTime.inputs:resetOnStop").set(True)
+        except Exception:
+            pass
+
     
     def set_use_sim_time(self):
-        """
-        Configures the ROS2 node to use simulation time.
-        """
-        # Define the command as a list
-        command = ["ros2", "param", "set", "/lidar_data_publisher", "use_sim_time", "true"]
-
-        # Run the command in a non-blocking way
-        subprocess.Popen(command)
-        self.get_logger().info("Configured ROS2 node to use simulation time.")
+        """Configures the node to use simulation time (subscribes to `/clock`)."""
+        # In rclpy this is a special parameter understood by the time source.
+        if not self.has_parameter('use_sim_time'):
+            self.declare_parameter('use_sim_time', True)
+        self.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        self.get_logger().info('Configured node to use simulation time (use_sim_time:=true).')
     
     def initialize_publishers_and_lidars(self):
         """
@@ -274,6 +276,8 @@ def publish_lidar(name,prim_path,lidar):
                 ("OnPlaybackTick.outputs:tick", "RunOnce.inputs:execIn"),
                 ("OnPlaybackTick.outputs:tick", "publishTF.inputs:execIn"),
                 ("readSimTime.outputs:simulationTime", "publishTF.inputs:timeStamp"),
+                ("readSimTime.outputs:simulationTime", "LidarPublisher.inputs:timeStamp"),
+                ("readSimTime.outputs:simulationTime", "LidarPointCloudPublisher.inputs:timeStamp"),
                 ("RenderProduct.outputs:execOut","LidarPublisher.inputs:execIn"),
                 ("RenderProduct.outputs:renderProductPath","LidarPublisher.inputs:renderProductPath"),
                 ("Context.outputs:context","LidarPublisher.inputs:context"),
@@ -287,6 +291,11 @@ def publish_lidar(name,prim_path,lidar):
     )
 
 
+
+    try:
+        og.Controller.attribute(f"{prim_path}/Lidar_Graph/readSimTime.inputs:resetOnStop").set(True)
+    except Exception:
+        pass
 
     # hydra_texture = rep.create.render_product(lidar.GetPath(), [1, 1], name="Isaac")
 
@@ -323,6 +332,7 @@ def publish_contact_sensor_info(name, prim_path,link, contact_sensor: ContactSen
                 ("ROS2Context", "omni.isaac.ros2_bridge.ROS2Context"),
                 ("ReadContactSensor", "omni.isaac.sensor.IsaacReadContactSensor"),
                 ("ROS2Publisher", "omni.isaac.ros2_bridge.ROS2Publisher"), # ROS2Publisher setup
+                ("readSimTime", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
             ],
             og.Controller.Keys.SET_VALUES: [
                 ("ROS2Context.inputs:domain_id", 1),
@@ -336,6 +346,7 @@ def publish_contact_sensor_info(name, prim_path,link, contact_sensor: ContactSen
                 ("OnPlaybackTick.outputs:tick", "ReadContactSensor.inputs:execIn"),
                 ("OnPlaybackTick.outputs:tick", "ROS2Publisher.inputs:execIn"),  
                 ("ROS2Context.outputs:context", "ROS2Publisher.inputs:context"),
+                ("readSimTime.outputs:simulationTime", "ROS2Publisher.inputs:timeStamp"),
                 # ("ReadContactSensor.outputs:inContact","ROS2Publisher.inputs:in_contact"),
                 # ("ReadContactSensor.outputs:value", "ROS2Publisher.inputs:force_value"),  
             ],
@@ -352,6 +363,11 @@ def publish_contact_sensor_info(name, prim_path,link, contact_sensor: ContactSen
         og.Controller.attribute(og_path + "/ReadContactSensor.outputs:value"),
         og.Controller.attribute(og_path + "/ROS2Publisher.inputs:force_value"),
     )
+
+    try:
+        og.Controller.attribute(f"{prim_path}/{link}_Contact_Sensor/readSimTime.inputs:resetOnStop").set(True)
+    except Exception:
+        pass
 
     return
 
@@ -381,7 +397,8 @@ def publish_imu(name,prim_path,link,imu):
                 ("IsaacReadIMU", "omni.isaac.sensor.IsaacReadIMU"),
                 ("ToString", "omni.graph.nodes.ToString"),
                 ("PrintText", "omni.graph.ui_nodes.PrintText"),
-                ("ROS2PublishImu", "omni.isaac.ros2_bridge.ROS2PublishImu")
+                ("ROS2PublishImu", "omni.isaac.ros2_bridge.ROS2PublishImu"),
+                ("readSimTime", "omni.isaac.core_nodes.IsaacReadSimulationTime"),
             ],
             # Connect the nodes
             og.Controller.Keys.CONNECT: [
@@ -392,7 +409,8 @@ def publish_imu(name,prim_path,link,imu):
                 ("IsaacReadIMU.outputs:linAcc", "ROS2PublishImu.inputs:linearAcceleration"),  # Pass linear acceleration
                 ("IsaacReadIMU.outputs:orientation", "ROS2PublishImu.inputs:orientation"),  # Pass orientation
                 ("IsaacReadIMU.outputs:angVel", "ToString.inputs:value"),  # Convert angular velocity for debugging
-                ("ToString.outputs:converted", "PrintText.inputs:text")  # Print IMU data to console
+                ("ToString.outputs:converted", "PrintText.inputs:text"),  # Print IMU data to console
+                ("readSimTime.outputs:simulationTime", "ROS2PublishImu.inputs:timeStamp"),
             ],
             # Set the node parameters
             og.Controller.Keys.SET_VALUES: [
@@ -407,6 +425,12 @@ def publish_imu(name,prim_path,link,imu):
             ],
         }
     )
+
+    try:
+        og.Controller.attribute(f"{prim_path}/{link}_IMU/readSimTime.inputs:resetOnStop").set(True)
+    except Exception:
+        pass
+
     return
 
 #=================================================================================
@@ -624,4 +648,10 @@ def publish_camera_tf(name,prim_path, camera: Camera):
         inputName="inputs:targetPrims",
         targetPrimPaths=[camera_prim],
     )
+
+    try:
+        og.Controller.attribute(f"{ros_camera_graph_path}/IsaacClock.inputs:resetOnStop").set(True)
+    except Exception:
+        pass
+
     return

@@ -229,6 +229,7 @@ class SensorLidar(SensorBase):
         render_product = graph.node("render_product", "omni.isaac.core_nodes.IsaacCreateRenderProduct")
         lidar_publisher = graph.node("lidar_publisher", "omni.isaac.ros2_bridge.ROS2RtxLidarHelper")
         lidar_publisher_points = graph.node("lidar_publisher_points", "omni.isaac.ros2_bridge.ROS2RtxLidarHelper")
+        read_sim_time = graph.node("read_sim_time", "omni.isaac.core_nodes.IsaacReadSimulationTime")
 
         # ReadSimTime = graph.node("readSimTime", "omni.isaac.core_nodes.IsaacReadSimulationTime")
         # publishTF = graph.node("publishTF", "omni.isaac.ros2_bridge.ROS2PublishTransformTree")
@@ -243,6 +244,19 @@ class SensorLidar(SensorBase):
         lidar_publisher_points.attribute("topicName", os.path.join(base_topic, self.config.topic, 'points'))
         lidar_publisher_points.attribute("frameId", os.path.join(self.robot_base_frame, self.parent_frame))
         lidar_publisher_points.attribute("type", 'point_cloud')
+
+        def _connect_timestamps_best_effort():
+            for dst in (lidar_publisher.path, lidar_publisher_points.path):
+                try:
+                    og.Controller.connect(
+                        f"{read_sim_time.path}.outputs:simulationTime",
+                        f"{dst}.inputs:timeStamp",
+                    )
+                except Exception:
+                    # Best-effort: node/port naming can vary between Isaac Sim versions
+                    pass
+
+        graph.add_action(_connect_timestamps_best_effort)
 
         # publishTF.attribute("targetPrims", [self.prim_path, os.path.join(self.prim_path, self.frame)])
 

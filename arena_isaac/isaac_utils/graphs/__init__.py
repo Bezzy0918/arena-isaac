@@ -77,6 +77,20 @@ class Graph:
 
     def node(self, name: str, type_: str, **kwargs) -> _Node:
         self._nodes.append(node := _Node(self, name, type_, **kwargs))
+
+        # Keep simulation time in sync across repeated stop/play cycles.
+        # Attribute names can vary across Isaac Sim versions, so this is best-effort.
+        if type_ == "omni.isaac.core_nodes.IsaacReadSimulationTime":
+            def _best_effort_enable_reset_on_stop(node_path: str = node.path) -> None:
+                for attr_name in ("resetOnStop", "reset_on_stop", "resetOnStopEnabled"):
+                    try:
+                        og.Controller.attribute(f"{node_path}.inputs:{attr_name}").set(True)
+                        return
+                    except Exception:
+                        continue
+
+            self.add_action(_best_effort_enable_reset_on_stop)
+
         return node
 
     def add_action(self, action: typing.Callable[[], typing.Any]):
