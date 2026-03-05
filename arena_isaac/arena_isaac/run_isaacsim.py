@@ -74,6 +74,16 @@ simulation_app.update()
 # -------------------------------------------------------------------------------------------------
 omni.usd.get_context().new_stage()
 
+from omni.isaac.core.utils.prims import define_prim
+
+# 显式定义根节点和分类容器，防止服务调用时这些路径不存在
+define_prim("/World", "Xform")
+define_prim("/World/Walls", "Xform")
+define_prim("/World/Doors", "Xform")
+define_prim("/World/Floors", "Xform")
+define_prim("/World/Obstacles", "Xform")
+define_prim("/World/Pedestrians", "Xform")
+
 extensions.enable_extension("omni.isaac.ros2_bridge")
 
 import random
