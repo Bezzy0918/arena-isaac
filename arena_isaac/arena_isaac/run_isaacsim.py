@@ -93,8 +93,7 @@ import numpy as np
 #Import world generation dependencies
 import omni.anim.graph.core as ag
 
-#imprt navmesh gen
-import omni.anim.navigation.core as nav
+import omni.anim.navigation.core as nav  # kept for omni.anim.people compat, not used for baking
 import omni.replicator.core as rep
 import omni.syntheticdata._syntheticdata as sd
 
@@ -153,33 +152,103 @@ light_1 = prims.create_prim(
 )
 assets_root_path = get_assets_root_path_safe()
 
-# Navmesh config and baking
-simulation_app.update()
-stage = omni.usd.get_context().get_stage()
-
-omni.kit.commands.execute("CreateNavMeshVolumeCommand",
-                          parent_prim_path=Sdf.Path("/World"),
-                          layer=stage.GetRootLayer()
-                          )
-simulation_app.update()
-
-omni.kit.commands.execute(
-    'ChangeSetting',
-    path='/exts/omni.anim.navigation.core/navMesh/config/agentRadius',
-    value=35.0)
-
+# navmesh_enabled stays TRUE (default) so omni.anim.people properly registers characters
+# and initializes animation graphs (ag.get_character() works). Without this, characters
+# show T-pose because the animation system never activates them.
+# No NavMesh volume is baked for GRScenes - without a baked NavMesh, PathPoints drives
+# straight-line movement toward the target, which is exactly what we want.
+#
+# dynamic_avoidance_enabled=False: disables agent-agent collision avoidance (handled by hunav SFM instead)
 omni.kit.commands.execute(
     'ChangeSetting',
     path='/exts/omni.anim.people/navigation_settings/dynamic_avoidance_enabled',
-    value=True)
-omni.kit.commands.execute(
-    'ChangeSetting',
-    path='/exts/omni.anim.people/navigation_settings/navmesh_enabled',
-    value=True)
-
-inav = nav.acquire_interface()
-x = inav.start_navmesh_baking()
+    value=False)
 simulation_app.update()
+
+
+# =================================================================================
+
+# ===========================raycast obstacle publisher============================
+# Publishes per-agent obstacle data from PhysX raycasts to hunav.py
+
+import math as _math
+import omni.physx
+from arena_people_msgs.msg import Pedestrians
+from hunav_msgs.msg import Agent, Agents
+from geometry_msgs.msg import Point as GeoPoint
+
+
+class RaycastObstaclePublisher(rclpy.node.Node):
+    """Runs in Isaac Sim process: casts PhysX rays around each pedestrian
+    and publishes obstacle hits to hunav.py's _obstacle_subscriber.
+
+    Mirrors hunav_isaac_wrapper's get_closest_obstacles() approach:
+      - 36 rays covering 360° (wrapper uses 90; 36 balances accuracy/perf)
+      - 5 sensor heights to catch low/mid/high wall geometry
+      - uses hit['position'] directly (exact world-space hit point)
+    """
+
+    NUM_RAYS = 36
+    RAY_DISTANCE = 4.0                         # metres (same as wrapper)
+    SENSOR_HEIGHTS = [0.05, 0.1, 0.25, 0.5, 1.0]  # metres above ped base Z
+
+    def __init__(self, peds_topic: str, obstacles_topic: str):
+        super().__init__('raycast_obstacle_publisher')
+        self._publisher = self.create_publisher(Agents, obstacles_topic, 10)
+        self._subscriber = self.create_subscription(
+            Pedestrians, peds_topic, self._peds_callback, 10
+        )
+        self._physx_query = omni.physx.get_physx_scene_query_interface()
+        self.get_logger().info(
+            f'RaycastObstaclePublisher: peds={peds_topic}, obs={obstacles_topic}'
+        )
+
+    def _peds_callback(self, msg: Pedestrians):
+        result = Agents()
+        result.header.stamp = self.get_clock().now().to_msg()
+        result.header.frame_id = 'map'
+
+        angle_step = 2.0 * _math.pi / self.NUM_RAYS
+
+        for ped in msg.pedestrians:
+            agent = Agent()
+            agent.name = ped.name
+
+            ox = ped.pose.position.x
+            oy = ped.pose.position.y
+            oz = ped.pose.position.z  # sensor heights added per-ray below
+
+            for i in range(self.NUM_RAYS):
+                angle = angle_step * i
+                dx = _math.cos(angle)
+                dy = _math.sin(angle)
+
+                best_dist = self.RAY_DISTANCE
+                best_pos = None
+
+                # Cast at each sensor height; keep the closest hit
+                for h in self.SENSOR_HEIGHTS:
+                    hit = self._physx_query.raycast_closest(
+                        carb.Float3(ox, oy, oz + h),
+                        carb.Float3(dx, dy, 0.0),
+                        self.RAY_DISTANCE,
+                    )
+                    if hit and hit.get('hit', False):
+                        d = hit.get('distance', self.RAY_DISTANCE)
+                        if d < best_dist:
+                            best_dist = d
+                            best_pos = hit.get('position')  # exact world-space hit
+
+                if best_pos is not None:
+                    pt = GeoPoint()
+                    pt.x = float(best_pos[0])
+                    pt.y = float(best_pos[1])
+                    pt.z = float(best_pos[2])
+                    agent.closest_obs.append(pt)
+
+            result.agents.append(agent)
+
+        self._publisher.publish(result)
 
 
 # =================================================================================
@@ -254,6 +323,13 @@ def main(args=None):
     for service in services:
         service.create(controller, qos_profile=QoSProfile(depth=2000))
 
+    # RaycastObstaclePublisher: publishes PhysX raycast hits to hunav's obstacle subscriber
+    # Topic names must match: peds published by hunav.py, obstacles consumed by hunav.py
+    raycast_pub = RaycastObstaclePublisher(
+        peds_topic='/task_generator_node/arena_peds',
+        obstacles_topic='/task_generator_node/hunav_closest_obstacles',
+    )
+
     PublishTime('/World/publish_time')
     world.reset()
     world.pause()
@@ -270,6 +346,7 @@ def main(args=None):
     try:
         while simulation_app.is_running():
             rclpy.spin_once(controller, timeout_sec=0)
+            rclpy.spin_once(raycast_pub, timeout_sec=0)
             if controller.running:
                 if not was_playing:
                     world.play()
