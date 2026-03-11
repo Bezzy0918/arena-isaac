@@ -375,21 +375,21 @@ class Person:
             try:
                 if self._world.physics_callback_exists(cb):
                     self._world.remove_physics_callback(cb)
-            except Exception:
-                pass
+            except Exception as e:
+                carb.log_warn(f"Exception while removing physics callback '{cb}': {e}")
 
         # Remove the timeline callback
         try:
             if self._world.timeline_callback_exists(self._stage_prefix + "/start_stop_sim"):
                 self._world.remove_timeline_callback(self._stage_prefix + "/start_stop_sim")
-        except Exception:
-            pass
+        except Exception as e:
+            carb.log_warn(f"Exception while removing timeline callback: {e}")
 
         # Delete the prim from the stage
         try:
             prims.delete_prim(self._stage_prefix)
-        except Exception:
-            pass
+        except Exception as e:
+            carb.log_warn(f"Exception while deleting prim '{self._stage_prefix}': {e}")
         # NOTE: do NOT call PeopleManager.remove_person() here;
         # remove_person() already called destroy() to get here, calling back
         # would be an infinite recursion and uses the wrong key anyway.

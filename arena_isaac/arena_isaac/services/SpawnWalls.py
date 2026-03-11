@@ -44,7 +44,8 @@ def wall_spawner(wall: Wall) -> bool:
     stage = omni.usd.get_context().get_stage()
     wall_prim = stage.GetPrimAtPath(prim_path)
     if wall_prim.IsValid() and not wall_prim.HasAPI(UsdPhysics.CollisionAPI):
-        UsdPhysics.CollisionAPI.Apply(wall_prim)
+        collision_api = UsdPhysics.CollisionAPI.Apply(wall_prim)
+        collision_api.CreateCollisionEnabledAttr(True)
 
     if (material := Material.from_msg(wall.material)):
         material.bind_to(prim_path)

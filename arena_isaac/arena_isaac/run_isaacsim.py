@@ -365,6 +365,8 @@ def main(args=None):
     finally:
         controller.get_logger().info('Shutting down ROS 2 node and simulation.')
         controller.destroy_node()
+        if raycast_pub is not None:
+            raycast_pub.destroy_node()
         rclpy.shutdown()
         simulation_app.close()
 
