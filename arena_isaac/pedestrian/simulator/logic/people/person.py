@@ -370,19 +370,29 @@ class Person:
         Method that will delete the person from the simulation world.
         """
 
-        # Remove the physics callback
-        self._world.remove_physics_callback(self._stage_prefix + "/state")
-        self._world.remove_physics_callback(self._stage_prefix + "/update")
+        # Remove the physics callbacks (guard against already-removed callbacks)
+        for cb in (self._stage_prefix + "/state", self._stage_prefix + "/update"):
+            try:
+                if self._world.physics_callback_exists(cb):
+                    self._world.remove_physics_callback(cb)
+            except Exception as e:
+                carb.log_warn(f"Exception while removing physics callback '{cb}': {e}")
 
         # Remove the timeline callback
-        self._world.remove_timeline_callback(self._stage_prefix + "/start_stop_sim")
+        try:
+            if self._world.timeline_callback_exists(self._stage_prefix + "/start_stop_sim"):
+                self._world.remove_timeline_callback(self._stage_prefix + "/start_stop_sim")
+        except Exception as e:
+            carb.log_warn(f"Exception while removing timeline callback: {e}")
 
         # Delete the prim from the stage
-        prims.delete_prim(self._stage_prefix)
-
-        # Remove the person from the people manager
-        if (path := self.character_skel_root_stage_path) is not None:
-            PeopleManager.get_people_manager().remove_person(path)
+        try:
+            prims.delete_prim(self._stage_prefix)
+        except Exception as e:
+            carb.log_warn(f"Exception while deleting prim '{self._stage_prefix}': {e}")
+        # NOTE: do NOT call PeopleManager.remove_person() here;
+        # remove_person() already called destroy() to get here, calling back
+        # would be an infinite recursion and uses the wrong key anyway.
 
     @property
     def position(self) -> np.ndarray:
