@@ -31,9 +31,7 @@ def get_scene_loader() -> USDSceneLoader:
 @on_exception(None)
 def load_usd_scene(request: LoadUsdScene.Request, response: LoadUsdScene.Response) -> LoadUsdScene.Response:
     """
-    Load a complete USD scene into Isaac Sim.
-
-    This handles GRScenes and similar pre-built USD environments.
+    Load a  USD scene (for GRScenes)into Isaac Sim.
     """
     loader = get_scene_loader()
 

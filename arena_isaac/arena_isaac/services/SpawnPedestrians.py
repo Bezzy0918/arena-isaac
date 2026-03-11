@@ -30,10 +30,6 @@ def spawn_pedestrian(pedestrian: Pedestrian) -> bool:
     usd_path = world_path(pedestrian.name)
     ensure_path(os.path.dirname(usd_path))
 
-    # On reset, the old Person at this path still has its physics/timeline callbacks
-    # registered in Isaac Sim's World.  The new Person's __init__ checks
-    # physics_callback_exists() and silently skips registration when it finds them,
-    # so update() is never called -> animation graph never applied -> T-pose + no movement.
     # Destroying the old Person first cleanly removes its callbacks and USD prim.
     PeopleManager.get_people_manager().remove_person(usd_path)  # no-op on first spawn
 

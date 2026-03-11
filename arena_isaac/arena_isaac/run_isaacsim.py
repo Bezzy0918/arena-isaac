@@ -153,11 +153,7 @@ light_1 = prims.create_prim(
 assets_root_path = get_assets_root_path_safe()
 
 # navmesh_enabled stays TRUE (default) so omni.anim.people properly registers characters
-# and initializes animation graphs (ag.get_character() works). Without this, characters
-# show T-pose because the animation system never activates them.
-# No NavMesh volume is baked for GRScenes - without a baked NavMesh, PathPoints drives
-# straight-line movement toward the target, which is exactly what we want.
-#
+# and initializes animation graphs (ag.get_character() works). 
 # dynamic_avoidance_enabled=False: disables agent-agent collision avoidance (handled by hunav SFM instead)
 omni.kit.commands.execute(
     'ChangeSetting',

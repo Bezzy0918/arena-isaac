@@ -13,10 +13,6 @@ from .utils import Service, on_exception
 # the character.  At 10 Hz hunav update rate + 1 m/s walk speed each step is
 # ~10 cm — well within that 0.3 m window, so targets would be popped
 # immediately and the character would idle between every update.
-#
-# Fix: project the hunav-computed *direction* forward by _LOOK_AHEAD metres so
-# the queued waypoint is always beyond the 0.3 m arrival radius.  The character
-# continuously walks in the hunav direction; hunav steers it every 100 ms.
 _LOOK_AHEAD_M = 2.0
 
 
