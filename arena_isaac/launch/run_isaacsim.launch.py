@@ -2,7 +2,7 @@ import launch
 from arena_bringup.substitutions import LaunchArgument
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess
-from launch.substitutions import EnvironmentVariable, PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import ExecutableInPackage
 
 
@@ -32,7 +32,8 @@ def generate_launch_description():
             cmd=[
                 PathJoinSubstitution([EnvironmentVariable('ISAAC_PATH'), 'python.sh']),
                 run_isaacsim_path,
-                '--log-level', logger.substitution
+                '--log-level', logger.substitution,
+                '--save-data', LaunchConfiguration('save_data'),
             ],
             output='log',
         ),

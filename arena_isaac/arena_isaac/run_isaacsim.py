@@ -2,16 +2,20 @@
 
 
 # preload attrs
+import argparse
 import os
 import arena_simulation_setup
 import arena_simulation_setup.utils.cattrs
+import signal
+import sys
 
 # Use the isaacsim to import SimulationApp
 from isaacsim import SimulationApp
 
 # Setting the config for simulation and make an simulation.
 CONFIG = {
-    "renderer": "Wireframe",
+    # "renderer": "Wireframe",
+    "renderer": "RayTracedLighting", # 或者使用 "PathTracing" 获得更高质量
     "headless": False,
 }
 #import parent directory
@@ -19,6 +23,15 @@ import sys
 from pathlib import Path
 
 simulation_app = SimulationApp(CONFIG)
+# --- 强制压制材质报错刷屏 ---
+import carb
+log = carb.logging.acquire_logging()
+log.set_level_threshold(carb.logging.LEVEL_ERROR) # 仅显示严重错误
+settings = carb.settings.get_settings()
+settings.set("/log/level", "error")
+settings.set("/log/fileLogLevel", "error")
+settings.set("/plugins/rtx.materialdb.plugin/logLevel", "fatal") # 彻底杀掉那个插件的输出
+# -------------------------
 parent_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(parent_dir))
 
@@ -74,16 +87,6 @@ simulation_app.update()
 # -------------------------------------------------------------------------------------------------
 omni.usd.get_context().new_stage()
 
-from omni.isaac.core.utils.prims import define_prim
-
-# 显式定义根节点和分类容器，防止服务调用时这些路径不存在
-define_prim("/World", "Xform")
-define_prim("/World/Walls", "Xform")
-define_prim("/World/Doors", "Xform")
-define_prim("/World/Floors", "Xform")
-define_prim("/World/Obstacles", "Xform")
-define_prim("/World/Pedestrians", "Xform")
-
 extensions.enable_extension("omni.isaac.ros2_bridge")
 
 import random
@@ -93,7 +96,8 @@ import numpy as np
 #Import world generation dependencies
 import omni.anim.graph.core as ag
 
-import omni.anim.navigation.core as nav  # kept for omni.anim.people compat, not used for baking
+#imprt navmesh gen
+import omni.anim.navigation.core as nav
 import omni.replicator.core as rep
 import omni.syntheticdata._syntheticdata as sd
 
@@ -111,6 +115,11 @@ from isaac_utils.managers.elevator_manager import elevator_manager
 from .services import services
 from pedestrian.simulator.logic.people_manager import PeopleManager
 from rclpy.qos import QoSProfile
+import traceback
+from omni.isaac.core.utils.prims import is_prim_path_valid
+# from omni.isaac.core.utils.physics import get_physics_context
+from .vln_dataset_utils import VLNDataLogger
+from vln_dataset_logger_rosbag import VLNDataLoggerRosbag
 
 # fmt: on
 # ======================================Base======================================
@@ -123,6 +132,11 @@ plane_material_paths = [
     # 'https://omniverse-content-production.s3.us-west-2.amazonaws.com/Materials/2023_1/vMaterials_2/Ceramic/Ceramic_Tiles_Glazed_Diamond.mdl'
 ]
 world = World()
+# world = World(
+#     physics_dt=1/60.0, 
+#     rendering_dt=1/30.0, 
+#     stage_units_in_meters=1.0
+# )
 world.scene.add_ground_plane(size=100, z_position=0.0)
 _stage = omni.usd.get_context().get_stage()
 plane_mdl_path = random.choice(plane_material_paths)
@@ -152,99 +166,33 @@ light_1 = prims.create_prim(
 )
 assets_root_path = get_assets_root_path_safe()
 
-# navmesh_enabled stays TRUE (default) so omni.anim.people properly registers characters
-# and initializes animation graphs (ag.get_character() works). 
-# dynamic_avoidance_enabled=False: disables agent-agent collision avoidance (handled by hunav SFM instead)
+# Navmesh config and baking
+simulation_app.update()
+stage = omni.usd.get_context().get_stage()
+
+omni.kit.commands.execute("CreateNavMeshVolumeCommand",
+                          parent_prim_path=Sdf.Path("/World"),
+                          layer=stage.GetRootLayer()
+                          )
+simulation_app.update()
+
+omni.kit.commands.execute(
+    'ChangeSetting',
+    path='/exts/omni.anim.navigation.core/navMesh/config/agentRadius',
+    value=35.0)
+
 omni.kit.commands.execute(
     'ChangeSetting',
     path='/exts/omni.anim.people/navigation_settings/dynamic_avoidance_enabled',
-    value=False)
+    value=True)
+omni.kit.commands.execute(
+    'ChangeSetting',
+    path='/exts/omni.anim.people/navigation_settings/navmesh_enabled',
+    value=True)
+
+inav = nav.acquire_interface()
+x = inav.start_navmesh_baking()
 simulation_app.update()
-
-
-# =================================================================================
-
-# ===========================raycast obstacle publisher============================
-# Publishes per-agent obstacle data from PhysX raycasts to hunav.py
-
-import math as _math
-import omni.physx
-from arena_people_msgs.msg import Pedestrians
-from hunav_msgs.msg import Agent, Agents
-from geometry_msgs.msg import Point as GeoPoint
-
-
-class RaycastObstaclePublisher(rclpy.node.Node):
-    """Runs in Isaac Sim process: casts PhysX rays around each pedestrian
-    and publishes obstacle hits to hunav.py's _obstacle_subscriber.
-
-    Mirrors hunav_isaac_wrapper's get_closest_obstacles() approach:
-      - 36 rays covering 360° (wrapper uses 90; 36 balances accuracy/perf)
-      - 5 sensor heights to catch low/mid/high wall geometry
-      - uses hit['position'] directly (exact world-space hit point)
-    """
-
-    NUM_RAYS = 36
-    RAY_DISTANCE = 4.0                         # metres (same as wrapper)
-    SENSOR_HEIGHTS = [0.05, 0.1, 0.25, 0.5, 1.0]  # metres above ped base Z
-
-    def __init__(self, peds_topic: str, obstacles_topic: str):
-        super().__init__('raycast_obstacle_publisher')
-        self._publisher = self.create_publisher(Agents, obstacles_topic, 10)
-        self._subscriber = self.create_subscription(
-            Pedestrians, peds_topic, self._peds_callback, 10
-        )
-        self._physx_query = omni.physx.get_physx_scene_query_interface()
-        self.get_logger().info(
-            f'RaycastObstaclePublisher: peds={peds_topic}, obs={obstacles_topic}'
-        )
-
-    def _peds_callback(self, msg: Pedestrians):
-        result = Agents()
-        result.header.stamp = self.get_clock().now().to_msg()
-        result.header.frame_id = 'map'
-
-        angle_step = 2.0 * _math.pi / self.NUM_RAYS
-
-        for ped in msg.pedestrians:
-            agent = Agent()
-            agent.name = ped.name
-
-            ox = ped.pose.position.x
-            oy = ped.pose.position.y
-            oz = ped.pose.position.z  # sensor heights added per-ray below
-
-            for i in range(self.NUM_RAYS):
-                angle = angle_step * i
-                dx = _math.cos(angle)
-                dy = _math.sin(angle)
-
-                best_dist = self.RAY_DISTANCE
-                best_pos = None
-
-                # Cast at each sensor height; keep the closest hit
-                for h in self.SENSOR_HEIGHTS:
-                    hit = self._physx_query.raycast_closest(
-                        carb.Float3(ox, oy, oz + h),
-                        carb.Float3(dx, dy, 0.0),
-                        self.RAY_DISTANCE,
-                    )
-                    if hit and hit.get('hit', False):
-                        d = hit.get('distance', self.RAY_DISTANCE)
-                        if d < best_dist:
-                            best_dist = d
-                            best_pos = hit.get('position')  # exact world-space hit
-
-                if best_pos is not None:
-                    pt = GeoPoint()
-                    pt.x = float(best_pos[0])
-                    pt.y = float(best_pos[1])
-                    pt.z = float(best_pos[2])
-                    agent.closest_obs.append(pt)
-
-            result.agents.append(agent)
-
-        self._publisher.publish(result)
 
 
 # =================================================================================
@@ -303,12 +251,28 @@ class IsaacController(rclpy.node.Node):
 
 # ======================================main=======================================
 
+keep_running = True
 
 def main(args=None):
     """
     Main function to initialize the simulation, create the ROS 2 node,
     and run the simulation loop.
     """
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--save-data', type=str, default='false', 
+                       help='Enable VLN dataset logging')
+    parser.add_argument('--log-level', type=str, default='info',
+                       help='log level for IsaacSim (debug/info/warn/error)')
+    parsed_args = parser.parse_args(args)
+    
+    enable_logging = parsed_args.save_data.lower() == 'true'
+    # apply log level if requested
+    try:
+        ll = parsed_args.log_level.lower()
+        # carb logging thresholds are uppercase
+        log.set_level_threshold(getattr(carb.logging, f"LEVEL_{ll.upper()}"))
+    except Exception:
+        pass
 
     sim = SimulationContext()
 
@@ -319,16 +283,60 @@ def main(args=None):
     for service in services:
         service.create(controller, qos_profile=QoSProfile(depth=2000))
 
-    # RaycastObstaclePublisher: publishes PhysX raycast hits to hunav's obstacle subscriber
-    # Topic names must match: peds published by hunav.py, obstacles consumed by hunav.py
-    raycast_pub = RaycastObstaclePublisher(
-        peds_topic='/task_generator_node/arena_peds',
-        obstacles_topic='/task_generator_node/hunav_closest_obstacles',
-    )
-
     PublishTime('/World/publish_time')
     world.reset()
     world.pause()
+
+    frame_step_counter = 0  # 初始化计数器
+    logger = None
+    target_camera_path = "/World/Robots/jackal/camera_link/front_camera"
+    target_pedestrian_root_path = "/World/Pedestrians"
+    target_lidar_path = "/World/Robots/jackal/lidar_link/gpu_lidar"
+    # 定义标志位
+    has_saved = False
+    global keep_running
+    # Replicator
+    #处理Ctrl+C 退出
+    '''def emergency_save_handler(signum, frame):        
+        global has_saved
+        sys.stderr.write(f"\n[URGENT] 收到终止信号 ({signum})! 正在保存数据...\n")
+        sys.stderr.flush()
+        
+        if not has_saved and logger and len(logger.param_buffer) > 0:
+            try:
+                # 强制保存
+                logger.save_episode()
+                has_saved = True  # 标记已保存
+                sys.stderr.write("[URGENT] ✅ 数据保存成功！\n")
+            except Exception as e:
+                sys.stderr.write(f"[URGENT] ❌ 保存失败: {e}\n")
+        else:
+            sys.stderr.write("[URGENT] Buffer 为空，无需保存。\n")
+        
+        sys.stderr.flush()
+        # 保存完后，手动退出程序
+        sys.exit(0)
+        signal.signal(signal.SIGINT, emergency_save_handler)
+        signal.signal(signal.SIGTERM, emergency_save_handler)
+        '''
+    
+    # ROSBAG
+    # 注册信号监听器
+    # 监听 SIGINT (Ctrl+C) 和 SIGTERM (launch 系统常用的杀死命令)
+    # 同时向 rosbag 转发信号，让其优雅退出
+    rosbag_process = None
+    def forward_signal_to_rosbag(signum, frame):
+        global keep_running, rosbag_process
+        sys.stderr.write(f"\n[Signal] 接收到信号 ({signum})，正在申请安全停止...\n")
+        if rosbag_process:
+            sys.stderr.write(f"[Signal] 向 rosbag (PID {rosbag_process.pid}) 转发 SIGINT...\n")
+            rosbag_process.send_signal(signal.SIGINT)
+        keep_running = False
+    
+    signal.signal(signal.SIGINT, forward_signal_to_rosbag)
+    signal.signal(signal.SIGTERM, forward_signal_to_rosbag)
+    
+    sys.stderr.write("[System] 信号拦截器启动，随时准备保存数据。\n")
 
     # set photoreal settings
     import isaac_utils.config.photoreal as photoreal
@@ -340,16 +348,59 @@ def main(args=None):
     # mainloop
     was_playing: bool = False
     try:
-        while simulation_app.is_running():
+        while simulation_app.is_running() and keep_running:
             rclpy.spin_once(controller, timeout_sec=0)
-            rclpy.spin_once(raycast_pub, timeout_sec=0)
             if controller.running:
                 if not was_playing:
                     world.play()
                     was_playing = True
                 door_manager.update()
                 elevator_manager.update()
-                world.step(render=True)
+
+                world.step(render=True) # 确保在这一步结束时，画面已经渲染结束
+                # 如果enable_logging开启，则开始数据采集和保存的流程
+                if enable_logging:
+                    # 延迟初始化逻辑：每隔 50 帧检查一次机器人是否出现
+                    if logger is None and frame_step_counter % 50 == 0:
+                        # 检查相机路径是否存在
+                        if is_prim_path_valid(target_camera_path):
+                            try:
+                                # logger = VLNDataLogger(camera_prim_path=target_camera_path, pedestrian_root_path = target_pedestrian_root_path, lidar_prim_path=target_lidar_path) # utils逻辑
+                                logger = VLNDataLoggerRosbag(
+                                    topics=[
+                                        "/task_generator_node/jackal/odom",
+                                        "/task_generator_node/jackal/front_camera/camera_info",
+                                        "/task_generator_node/jackal/front_camera/image",
+                                        "/task_generator_node/jackal/front_camera/depth",
+                                        "/task_generator_node/jackal/lidar/points",
+                                        "/task_generator_node/human_states",
+                                        "/tf",
+                                        "/tf_static",
+                                    ],
+                                    output_dir="collected_data"
+                                )
+                                rosbag_process = logger.process  # 保存进程引用
+                                logger.start_recording()  # 启动 rosbag 录制
+                                controller.get_logger().info('✅ VLNDataLoggerRosbag 初始化成功')
+                            except Exception as e:
+                                print(f" VLNDataLoggerRosbag 初始化失败: {e}")
+                        else:
+                            if frame_step_counter % 300 == 0: 
+                                print(f" 等待机器人生成... 正在寻找路径: {target_camera_path}")
+                    if logger:
+                        try:
+                            # logger.step(step_idx=frame_step_counter) # utils逻辑
+                            frame_step_counter += 1  # 每次采集后自增
+                            '''
+                            感觉frame_step_counter还需要斟酌 无法确保记录的第0帧数据就是仿真的真实原点
+                            存在logger初始化还没完成已经开始运动的可能
+                            '''
+                        except Exception as e:
+                            # 强制把错误堆栈打印到 stderr
+                            sys.stderr.write(f"\n🔥 Logger Step 崩溃原因: {e}\n")
+                            traceback.print_exception(type(e), e, e.__traceback__, file=sys.stderr)
+                            sys.stderr.flush()
+                                    
             else:
                 if was_playing:
                     world.pause()
@@ -357,17 +408,29 @@ def main(args=None):
                 simulation_app.update()
 
     except KeyboardInterrupt:
-        controller.get_logger().info('Received KeyboardInterrupt, shutting down.')
+        controller.get_logger().info('Received KeyboardInterrupt, shutting down.......')
     except Exception as e:
         controller.get_logger().error(f'Exception in main loop: {e}')
         controller.get_logger().error(traceback.format_exc())
         traceback.print_exc(file=sys.stdout)
     finally:
-        controller.get_logger().info('Shutting down ROS 2 node and simulation.')
-        controller.destroy_node()
-        if raycast_pub is not None:
-            raycast_pub.destroy_node()
-        rclpy.shutdown()
+        # 在程序退出时保存数据
+        sys.stderr.write("[Finally] 正常退出流程...\n")
+        if enable_logging and logger and not has_saved: #开启数据保存+Logger存在+数据未保存
+            sys.stderr.write(f"[SAVE] 正在将 {len(logger.param_buffer)} 帧数据写入磁盘...\n")
+            
+            # logger.save_episode() # utils逻辑
+            logger.stop_recording()
+            has_saved = True
+            sys.stderr.write("[SAVE] rosbag 已保存完成！\n")
+        else:
+            sys.stderr.write("[INFO] logger 未初始化或已保存，跳过 rosbag 等待。\n")
+            
+        if rclpy.ok():
+            sys.stderr.write("[Finally] Shutting down ROS 2 node and simulation....\n")
+            controller.destroy_node() 
+            rclpy.shutdown()
+        
         simulation_app.close()
 
 
